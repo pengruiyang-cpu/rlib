@@ -1,293 +1,362 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <assert.h>
+#include <errno.h>
+#include <sys/types.h>
+#include <unistd.h>
+#include <fcntl.h>
 
+/* rlib.h and other file is at https://github.com/pengruiyang-cpu/rlib.git */
 #include "rlib.h"
 
 
-#define FILE_EXE_ROOT 0x01
-#define FILE_RDB_ROOT 0x02
-#define FILE_WDB_ROOT 0x04
-
-#define FILE_EXE_USER 0x08
-#define FILE_RDB_USER 0x10
-#define FILE_WDB_USER 0x20
-
-#define FILE_DIR 0x40
-
-#define FILE_SPC 0x80
-#define FILE_SPC_LNK 0x01
-
-
-struct superblock {
-    /* master boot record */
-    char mbr[512];
-    /* point to -> *start of root_dir (block) */
-    unsigned int root_dir;
-    /* how many blocks in this disk */
-    unsigned int block_count;
-    /* how can I use this?  */
-    char reserved[3575];
-};
-
-struct inode {
-	/* file or floder name */
-	char name[128];
-    /* file type */
-    unsigned char file_type;
-	/* blocks */
-	unsigned int blocks[28];
-	/* 1st block or special file */
-	unsigned int block_1st;
-	/* 2nd block */
-	unsigned int block_2nd;
-	/* 3rd block */
-	unsigned int block_3rd;
-
-    char reserved[3];
-};
-
-struct folder {
-    /* start block of this folder */
-    unsigned int block_start;
-    /* inode bitmap 512B */
-	char inode_bitmap[4096 / 8];
-    /* inodes 1048576B */
-	struct inode inodes[4096];
-};
-
-struct cfs {
-    /* super block */
-    struct superblock super_block;
-    /* blocks bitmap */
-	char *block_bitmap;
-    /* root-dir 1049088B */
-	struct folder *root_dir;
-    /* data... */
-    char *data;
-};
-
-
-/* 
-    init / format disk fd
-
-    STEPS: 
-        1. format disk
-            1. format super-block
-                1. get disk size
-                    if disk too small: failed
-                2. get block count
-                3. write it
-                    1. write(read(mbr))
-                    2. reserve root_dir
-                    3. write(block count)
-            
-            2. format block-bitmap
-                1. clean block-bitmap
-                2. set block-bitmap.bit 0 (super-block)
-
-            3. format root-dir
-                1. clean root-dir
-                2. create directory . and ..
-                3. write
-                4. set block-bitmap.bit 1 - 257
-        2. init fs
-            1. init super-block
-                1. read it
-                2. write it
-
-            2. init block-bitmap
-                1. read it
-                2. write it
-            
-            3. init root-dir
-                1. read it
-                2. write it
-*/
-struct cfs *cfs_init(FILE *fd, char mode) {
-    if (mode == 1) {
-        unsigned int disk_size;
-        unsigned int block_count;
-        struct cfs *fs = (struct cfs *) malloc(sizeof(struct cfs));
-
-        rewind(fd);
-        fseek(fd, 0, SEEK_END);
-        disk_size = ftell(fd);
-        rewind(fd);
-
-        block_count = disk_size / 4096;
-
-#define CFS_HEADER_SIZE 4096 /* super-block */ + block_count / 8 /* block bitmap */ + sizeof(struct folder) /* root-dir */
-        
-        if (CFS_HEADER_SIZE >= disk_size) {
-            printf("fatal error: input disk too small\n");
-            return 0;
-        }
-#undef CFS_HEADER_SIZE
-
-        fs->super_block.block_count = block_count;
-
-        /* jump after MBR 512B */
-        fseek(fd, 512, SEEK_CUR);
-        fs->super_block.root_dir = (4096 + block_count / 8) / 4096;
-        assert(fwrite(&fs->super_block.root_dir, 1, 4, fd) != 0);
-        assert(fwrite(&block_count, 1, 4, fd) != 0);
-        rewind(fd);
-
-
-        /* jump after super-block */
-        fseek(fd, 4096, SEEK_SET);
-
-        char *block_bitmap = (char *) malloc(block_count / 8);
-        assert(block_bitmap != NULL);
-        memset(block_bitmap, 0, block_count / 8);
-
-        bitmap_set(block_bitmap, 0, 1);
-
-        assert(fwrite(block_bitmap, 4096, block_count / 8, fd) != 0);
-
-
-        struct folder *root_dir = malloc(sizeof(struct folder));
-
-        memset(root_dir, 0, sizeof(struct folder));
-
-#define CFS_ROOT_DIR_OFFSET (4096 /* super-block */ + block_count / 8 /* block bitmap */) / 4096
-
-        root_dir->block_start = CFS_ROOT_DIR_OFFSET;
-
-#undef CFS_ROOT_DIR_OFFSET
-
-        memset(root_dir->inode_bitmap, 0, 4096 / 8);
-        memset(root_dir->inodes, 0, 4096 * sizeof(struct inode));
-
-        /* . */
-        char filename[128] = {"."};
-        strcpy(root_dir->inodes[0].name, filename);
-        
-        root_dir->inodes[0].file_type |= FILE_SPC;
-        root_dir->inodes[0].file_type |= FILE_SPC_LNK;
-
-        /* NOTE! if a linker file.point-to = 0, point to root-dir */
-        root_dir->inodes[0].block_1st = 0;
-
-        bitmap_set(root_dir->inode_bitmap, 0, 1);
-
-        /* .. */
-        filename[0] = '.';
-        filename[1] = '.';
-
-        strcpy(root_dir->inodes[1].name, filename);
-        root_dir->inodes[1].file_type |= FILE_SPC;
-        root_dir->inodes[1].file_type |= FILE_SPC_LNK;
-
-        /* NOTE! if a linker file.point-to = 0, point to root-dir */
-        root_dir->inodes[1].block_1st = 0;
-
-        bitmap_set(root_dir->inode_bitmap, 1, 1);
-
-        fs->block_bitmap = block_bitmap;
-        fs->root_dir = root_dir;
-
-
-        assert(fwrite(&(root_dir->block_start), 1, 4, fd) != 0);
-        assert(fwrite(root_dir->inode_bitmap, 1, 4096 / 8, fd) != 0);
-        assert(fwrite(root_dir->inodes, sizeof(struct inode), 4096, fd) != 0);
-
-        rewind(fd);
-
-        return fs;
-    }
-
-    else {
-        struct cfs *fs = (struct cfs *) malloc(sizeof(struct cfs));
-        fs->root_dir = (struct folder *) malloc(sizeof(struct folder));
-
-        rewind(fd);
-        
-        fread(fs->super_block.mbr, 1, 512, fd);
-        fread(&(fs->super_block.root_dir), 1, 4, fd);
-        fread(&(fs->super_block.block_count), 1, 4, fd);
-
-        fs->block_bitmap = (char *) malloc(fs->super_block.block_count / 8);
-        fread(fs->block_bitmap, 1, fs->super_block.block_count / 8, fd);
-        fread(&(fs->root_dir->block_start), 1, 4, fd);
-        fread(fs->root_dir->inode_bitmap, 1, 4096 / 8, fd);
-        fread(fs->root_dir->inodes, sizeof(struct inode), 4096, fd);
-
-        return fs;
-    }
-}
-
-
-/*
-    create a file to dir. 
-
-    STEPS: 
-        1. find a free inode
-        2. write file name to inode
-        3. write file type to inode
-        4. write inode bitmap
-*/
-int cfs_create_file_mem(struct folder *dir, char *filename, unsigned char type) {
-    int inode;
-
-    for (inode = 0; inode < 4096 && bitmap_read(dir->inode_bitmap, inode) != 0; inode++);
-    bitmap_set(dir->inode_bitmap, inode, 1);
-
-    strcpy(dir->inodes[inode].name, filename);
-    dir->inodes[inode].file_type = type;
-
-    return inode;
-}
-
-
-/*
-    create a file to fd
-
-    STEPS:
-        1. create a file in memory
-        2. write to fd
-            1. write inode-bitmap
-            2. write inode changed
-*/
-int cfs_create_file(FILE *fd, struct folder *dir, char *filename, unsigned char type) {
-    unsigned int inode;
-
-    rewind(fd);
-
-    inode = cfs_create_file_mem(dir, filename, type);
-
-    fseek(fd, (dir->block_start) * 4096, SEEK_SET);
-
-    assert(fwrite(&(dir->block_start), 1, 4, fd) != 0);
-    assert(fwrite(dir->inode_bitmap, 1, 4096 / 8, fd) != 0);
-    assert(fwrite(dir->inodes, sizeof(struct inode), 4096, fd) != 0);
-
-    return inode;
-}
-
+#ifdef DEBUG
 int main(int argc, const char **argv) {
-    FILE *fd = fopen(argv[2], "rb+");
-    struct cfs *fs;
-    assert(fd != NULL);
+    int fd;
+    fd = open(argv[1], O_RDWR);
+    try(fd);
 
-    if (strcmp(argv[1], "format") == 0) {
-        fs = cfs_init(fd, 1);
+    char flag;
+
+    if (strcmp(argv[2], "format") == 0) {
+        flag = 0;
+        try(cfs_format(fd));
     }
 
-    else {
-        fs = cfs_init(fd, 0);
+    else if (strcmp(argv[2], "init") == 0) {
+        flag = 1;
+        try(cfs_init(fd));
     }
 
+    cfs_ls(superblock_m.root_dir);
+
+    char filename[128] = {"new file.txt"};
+
+    struct inode_d *inode = cfs_create(cfs.root, filename, IMD_AP_ROOT_RD | 
+                                    IMD_AP_ROOT_WR | 
+                                    IMD_AP_ROOT_XR | 
+                                    IMD_AP_USER_RD | 
+                                    IMD_AP_USER_WR | 
+                                    IMD_AP_USER_XR | 
+                                    IMD_FT_REGFILE
+    );
+
+    char buffer[] = {"abcabcabc"};
+
+    cfs_write(fd, inode, buffer, strlen(buffer) - 1);
+
+    cfs_writeback(fd);
+
+    char buffer_read[4096] = {0};
+
+    cfs_read(fd, inode, buffer_read, 4096);
+
+    printf("read from new file.txt: %s\n", buffer_read);
+
+    cfs_writeback(fd);
+
+    return 0;
+}
+
+#endif
+
+/*
+    write disk types to disk fd
+    STEPS: 
+        1. write super_block
+        2. write block_bitmap
+        3. init dir root
+        4. write root
+*/
+int cfs_format(int fd) {
+    __off_t disk_size;
+    disk_size = lseek(fd, 0, SEEK_END);
+    lseek(fd, 0, SEEK_SET);
+    printf("disk size: %lf MB, %lf GB\n", (double) (disk_size / 1024 / 1024), (double) (disk_size / 1024 / 1024 / 1024));
+    unsigned int block_count = disk_size / 4096;
+
+    memset(&superblock_d, 0, sizeof(struct super_block_d));
+    memset(&cfs, 0, sizeof(struct cfs_m));
+
+    superblock_d.mbr[510] = 0x55;
+    superblock_d.mbr[511] = 0xaa;
+
+    superblock_d.magic = SUPERBLOCK_MAGIC;
+
+    superblock_d.block_count = block_count;
+
+    superblock_d.block_bitmap = /* superblock */ 1 * 4096 / 4096;
+
+    superblock_d.root_dir = 4096 / 4096 + ALIGNUP_4096(block_count / 8) / 4096;
+
+    memset(&(superblock_d.reserved), 0, 3568);
+
+    superblock_m.sb_disk = &superblock_d;
+    cfs.superblock = &superblock_m;
+
+    cfs.block_bitmap = malloc(ALIGNUP_4096(block_count / 8));
+    if (cfs.block_bitmap == NULL) {
+        return 1;
+    }
+
+    memset(cfs.block_bitmap, 0, ALIGNUP_4096(block_count / 8));
+
+    cfs.root = malloc(sizeof(struct dir_d));
+    if (cfs.root == NULL) {
+        free(cfs.block_bitmap);
+        return 1;
+    }
+
+    memset(cfs.root, 0, sizeof(struct dir_d));
+    memset(cfs.root->inode_bitmap, 0, 4096 / 8);
+    memset(cfs.root->inodes, 0, sizeof(struct inode_d) * 4096);
+
+    /* init the root dir */
+#define root cfs.root
+#define ROOT_START_BLOCK /* superblock */ 4096 / 4096 + /* block bitmamp */ ALIGNUP_4096(block_count / 8) / 4096
+
+    char filename[128] = {"."};
+
+    cfs_create(root, filename, IMD_AP_ROOT_RD | 
+                                IMD_AP_ROOT_WR | 
+                                IMD_AP_ROOT_XR | 
+                                IMD_AP_USER_RD | 
+                                IMD_AP_USER_WR | 
+                                IMD_AP_USER_XR | 
+                                IMD_FT_FOLDER | 
+                                IMD_FT_POINTER
+    );
+
+    root->inodes[0].block_count = ROOT_START_BLOCK;
+
+
+    filename[1] = '.';
+    cfs_create(root, filename, IMD_AP_ROOT_RD | 
+                                IMD_AP_ROOT_WR | 
+                                IMD_AP_ROOT_XR | 
+                                IMD_AP_USER_RD | 
+                                IMD_AP_USER_WR | 
+                                IMD_AP_USER_XR | 
+                                IMD_FT_FOLDER | 
+                                IMD_FT_POINTER
+    );
+
+    root->inodes[1].block_count = ROOT_START_BLOCK;
+    
+    superblock_m.block_bitmap = cfs.block_bitmap;
+    superblock_m.root_dir = root;
+#define BLOCK_USED 1 /* superblock */ + ALIGNUP_4096(block_count / 8) / 4096 + sizeof(struct dir_d) / 4096
+
+    int i;
+    for (i = 1; i < BLOCK_USED; i++) {
+        bitmap_set(cfs.block_bitmap, i - 1, 1);
+    }
+
+    try(write(fd, &superblock_d, sizeof(struct super_block_d)));
+    try(write(fd, cfs.block_bitmap, ALIGNUP_4096(block_count / 8)));
+    try(write(fd, root, sizeof(struct dir_d)));
+
+    superblock_m.root_dir = root;
+
+    return 0;
+
+#undef ROOT_START_BLOCK
+#undef root
+}
+
+
+/*
+    read from disk. 
+    1. read superblock
+    2. read block bitmap
+    3. read root-dir
+*/
+int cfs_init(int fd) {
+
+    try(read(fd, &(superblock_d.mbr), 512));
+    try(read(fd, &(superblock_d.magic), sizeof(unsigned int)));
+
+    if (superblock_d.magic != SUPERBLOCK_MAGIC) {
+        printf("warning: magic number isn't %x\n", SUPERBLOCK_MAGIC);
+    }
+    try(read(fd, &(superblock_d.block_count), sizeof(unsigned int)));
+    try(read(fd, &(superblock_d.block_bitmap), sizeof(unsigned int)));
+    try(read(fd, &(superblock_d.root_dir), sizeof(unsigned int)));
+    try(read(fd, &(superblock_d.reserved), 3568));
+
+    printf("superblock: magic = %d, "
+                        "block_count = %d, "
+                        "block_bitmap = %d, "
+                        "root_dir = %d\n", 
+                        superblock_d.magic, 
+                        superblock_d.block_count, 
+                        superblock_d.block_bitmap, 
+                        superblock_d.root_dir
+    );
+
+    superblock_m.sb_disk = &superblock_d;
+
+    cfs.block_bitmap = malloc(ALIGNUP_4096(superblock_d.block_count / 8));
+    if (cfs.block_bitmap == NULL) {
+        return 1;
+    }
+
+    try(read(fd, cfs.block_bitmap, ALIGNUP_4096(superblock_d.block_count / 8)));
+
+#define root cfs.root
+    root = malloc(sizeof(struct dir_d));
+    if (root == NULL) {
+        return 1;
+    }
+
+    try(read(fd, root->inode_bitmap, 4096 / 8));
+    try(read(fd, root->inodes, sizeof(struct inode_d) * 4096));
+
+    superblock_m.root_dir = root;
+
+    return 0;
+#undef root
+}
+
+int cfs_writeback(int fd) {
+    lseek(fd, 0, SEEK_SET);
+    try(write(fd, &(superblock_d.mbr), 512));
+    try(write(fd, &(superblock_d.magic), sizeof(unsigned int)));
+    try(write(fd, &(superblock_d.block_count), sizeof(unsigned int)));
+    try(write(fd, &(superblock_d.block_bitmap), sizeof(unsigned int)));
+    try(write(fd, &(superblock_d.root_dir), sizeof(unsigned int)));
+    try(write(fd, &(superblock_d.reserved), 3568));
+
+    try(write(fd, cfs.block_bitmap, ALIGNUP_4096(superblock_d.block_count / 8)));
+
+#define root cfs.root
+
+    try(write(fd, root->inode_bitmap, 4096 / 8));
+    try(write(fd, root->inodes, sizeof(struct inode_d) * 4096));
+
+    return 0;
+
+#undef root
+}
+
+int cfs_ls(struct dir_d *dir) {
     int i;
 
     for (i = 0; i < 4096; i++) {
-        //if (bitmap_read(fs->root_dir->inode_bitmap, i)) {
-            printf("%d: %s\n", i, fs->root_dir->inodes[i].name);
-        //}
+        printf("%d", bitmap_read(dir->inode_bitmap, i));
     }
 
-    fclose(fd);
-    return 0;
+    putchar('\n');
+
+    for (i = 0; i < 4096; i++) {
+        if (bitmap_read(dir->inode_bitmap, i) == 1) {
+            printf("inode %d, file name: %s\n", i, dir->inodes[i].filename);
+        }
+    }
+    return i;
+}
+
+
+unsigned int alloc_block(void) {
+    int i;
+    for (i = 0; bitmap_read(cfs.block_bitmap, i) == 1; i++);
+    return i;
+}
+
+/*
+    create a new file in dir. 
+    STEPS: 
+        1. find a free inode
+        2. write file name and mode. 
+*/
+struct inode_d *cfs_create(struct dir_d *dir, char *filename, unsigned short mode) {
+    int inode;
+    for (inode = 0; inode < 4096 && bitmap_read(dir->inode_bitmap, inode) == 1; inode++);
+
+    bitmap_set(dir->inode_bitmap, inode, 1);
+    printf("new file inode: %d\n", inode);
+
+    dir->inodes[inode].mode = mode;
+    dir->inodes[inode].inode = inode;
+    memcpy(dir->inodes[inode].filename, filename, 128 - 1);
+
+    return &(dir->inodes[inode]);
+}
+
+
+/*
+    write buffer to file. 
+
+    STEPS: 
+        1. how many blocks we need? 
+        2. write to all blocks[26]. 
+        3. then write to 1st_block, 2nd_block and 3rd_block. 
+        4. return size wrote. 
+*/
+unsigned int cfs_write(int fd, struct inode_d *inode, char *buffer, unsigned int size) {
+    unsigned int block_need = ALIGNUP_4096(size) / 4096;
+    unsigned int i;
+
+    for (i = 0; i < block_need; i++) {
+        if (i > 26) {
+            /* not support */
+            return 0;
+        }
+
+        else {
+            /* if this is last block */
+            if (i == block_need - 1) {
+                inode->blocks[i] = alloc_block();
+                try(write(fd, (char *) (buffer + i * 4096), size - i * 4096));
+                inode->block_count++;
+            }
+
+            else {
+                inode->blocks[i] = alloc_block();
+                try(write(fd, (char *) (buffer + i * 4096), 4096));
+                inode->block_count++;
+            }
+        }
+    }
+
+    inode->block_count = block_need;
+    inode->block_size_offset = i * 4096 - size;
+    return size;
+}
+
+/*
+    read from inode. 
+    STEPS: 
+        1. how many blocks we need read. 
+        2. read from blocks[26]. 
+        3. then read other blocks if we need. 
+        4. return size we read. 
+*/
+unsigned int cfs_read(int fd, struct inode_d *inode, char *buffer, unsigned int max_size) {
+    unsigned int block_need = ALIGNUP_4096(max_size) / 4096;
+    if (block_need > inode->block_count) {
+        /* too big */
+        return 0;
+    }
+    unsigned int i;
+
+    for (i = 0; i < block_need; i++) {
+        if (i > 26) {
+            /* not support */
+            return 0;
+        }
+
+        else {
+            /* if this is last block */
+            if (i == block_need - 1) {
+                try(read(fd, (char *) (buffer + i * 4096), max_size - i * 4096));
+            }
+
+            else {
+                try(read(fd, (char *) (buffer + i * 4096), 4096));
+            }
+        }
+    }
+
+    return max_size;
 }
