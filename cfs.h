@@ -33,20 +33,18 @@ struct inode_d {
     unsigned int inode;
     /* inode mode */
     unsigned short mode;
-    /* file name */
-    char filename[128];
     /* block count (if it's a pointer, point to inode)*/
     unsigned int block_count;
     /* offset to last block (block_count * 4096 + block_offset = file_size) */
     unsigned short block_size_offset;
-    /* blocks */
-    unsigned int blocks[26];
     /* block pointer 1st */
     unsigned int block_ptr_1;
     /* block pointer 2nd */
     unsigned int block_ptr_2;
     /* block pointer 3rd */
     unsigned int block_ptr_3;
+    /* reserved */
+    char reserved[8];
 };
 
 
@@ -56,6 +54,8 @@ struct dir_d {
     unsigned char inode_bitmap[4096 / 8];
     /* inodes */
     struct inode_d inodes[4096];
+    /* names */
+    char names[4096 * 128];
     /* reserved (use 257 blocks) */
     char reserved[3584];
 };
