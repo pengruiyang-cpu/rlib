@@ -100,7 +100,5 @@ int cfs_writeback(int fd);
 int cfs_ls(struct dir_d *dir);
 struct inode_d *cfs_create(struct dir_d *dir, char *filename, unsigned short mode);
 unsigned int alloc_block(void);
-unsigned int cfs_write(int fd, struct inode_d *inode, char *buffer, unsigned int size);
-unsigned int cfs_read(int fd, struct inode_d *inode, char *buffer, unsigned int max_size);
 unsigned int cfs_write_block(int fd, struct inode_d *inode, unsigned int block_count, char *buffer, unsigned int size);
 unsigned int cfs_read_block(int fd, struct inode_d *inode, unsigned int block_count, char *buffer, unsigned int size);

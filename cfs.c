@@ -45,12 +45,12 @@ int main(int argc, const char **argv) {
     cfs_ls(cfs.root);
 
     char buffer_w[4096] = {"hello, world"};
-    cfs_write_block(fd, inode, 1, buffer_w, 4096);
+    cfs_write(fd, inode, buffer_w, 0, 4096);
 
     cfs_writeback(fd);
 
     char buffer_r[4096] = {0};
-    cfs_read_block(fd, inode, 1, buffer_r, 4096);
+    cfs_read_block(fd, inode, 1024, buffer_r, 4096);
     printf("%s\n", buffer_r);
 
     cfs_writeback(fd);
@@ -151,9 +151,10 @@ int cfs_format(int fd) {
 
     root->inodes[1].block_count = ROOT_START_BLOCK;
 
-    char zero[1024] = {0};
+    char zero[1024] = {};
+    char zero_filename[128 - 1] = {"zero.raw.chr"}
     
-    struct inode_d *inode = cfs_create(root, zero, 
+    struct inode_d *inode = cfs_create(root, zero_filename, 
                                 IMD_AP_ROOT_RD | 
                                 IMD_AP_ROOT_WR | 
                                 IMD_AP_ROOT_XR | 
@@ -306,18 +307,15 @@ int write_block(int fd, void *buffer, unsigned int size, unsigned int block) {
     return 0;
 }
 
-unsigned int cfs_write_block(int fd, struct inode_d *inode, unsigned int block_count, char *buffer, unsigned int size) {
-    if (block_count < 1024) {
+unsigned int cfs_write_block(int fd, struct inode_d *inode, unsigned int block_pos, char *buffer, unsigned int size) {
+    if (block_pos < 1024) {
         unsigned int block_ptr_1[1024];
         unsigned int bp1_index;
-        if (block_count == 1) {
+        if (block_pos == 1) {
             inode->block_ptr_1 = alloc_block();
-            bp1_index = 0;
         }
-
-        else {
-            bp1_index = block_count - 1;
-        }
+        
+        bp1_index = block_pos - 1;
 
         read_block(fd, block_ptr_1, 4096, inode->block_ptr_1);
         block_ptr_1[bp1_index] = alloc_block();
@@ -329,12 +327,12 @@ unsigned int cfs_write_block(int fd, struct inode_d *inode, unsigned int block_c
     }
 }
 
-unsigned int cfs_read_block(int fd, struct inode_d *inode, unsigned int block_count, char *buffer, unsigned int size) {
-    if (block_count < 1024) {
+unsigned int cfs_read_block(int fd, struct inode_d *inode, unsigned int block_pos, char *buffer, unsigned int size) {
+    if (block_pos < 1024) {
         unsigned int block_ptr_1[1024];
         unsigned int bp1_index;
 
-        bp1_index = block_count - 1;
+        bp1_index = block_pos - 1;
         read_block(fd, block_ptr_1, 4096, inode->block_ptr_1);
 
         read_block(fd, block_ptr_1, 4096, inode->block_ptr_1);
