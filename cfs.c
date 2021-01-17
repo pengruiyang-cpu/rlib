@@ -19,63 +19,19 @@
 
 #ifdef DEBUG
 int main(int argc, const char **argv) {
-    int opr;
-    int fd;
-    char filename[1024] = {0};
-    char option;
-    char name_fs[1024] = {0};
+    int fd = open(argv[1], O_RDWR);
+    try(fd);
 
-    while ((option = getopt(argc, argv, "i:fcwrn")) != -1) {
-        switch (option) {
-            case 'i':
-                strncpy(filename, optarg, 1024);
-                break;
-
-            case 'f':
-                opr = FORMAT;
-                break;
-
-            case 'c':
-                opr = CREATE;
-                break;
-
-            case 'w':
-                opr = WRITE;
-                break;
-
-            case 'r':
-                opr = READ;
-                break;
-
-            case 'n':
-                strncpy(name_fs, optarg, 1024);
-                break;
-
-            default:
-                printf("error: unknow command-line option '-%c'\n", option);
-                return 1;
-        }
-    }
-
-    if (filename[0] == '\0') {
-        printf("fatal error: no input file\n");
-        return 1;
-    }
-
-    fd = open(filename, O_RDWR);
-    if (fd < 0) {
-        printf("fatal error: %s: %s\n", filename, strerror(errno));
-        return 1;
-    }
-
-    if (opr == FORMAT) {
+    if (strcmp(argv[2], "format") == 0) {
         cfs_format(fd);
+        close(fd);
         return 0;
     }
 
-    if (opr == CREATE) {
-        if (name_fs[0] == '\0') {
-            cfs_create(cfs.root, name_fs,
+    cfs_init(fd);
+    char filename[128] = {"newfile.txt"};
+
+    struct inode_d *inode = cfs_create(cfs.root, filename, 
                                 IMD_AP_ROOT_RD | 
                                 IMD_AP_ROOT_WR | 
                                 IMD_AP_ROOT_XR | 
@@ -83,24 +39,23 @@ int main(int argc, const char **argv) {
                                 IMD_AP_USER_WR | 
                                 IMD_AP_USER_XR | 
                                 IMD_FT_REGFILE
-            );
-        }
+    );
 
-        else {
-            printf("fatal error: no file name\n");
-            return 1;
-        }
-        return 0;
-    }
+    cfs_ls(cfs.root);
+    get_info(inode);
 
-    if (opr == WRITE) {
-        if (name_fs[0] == '\0') {
+    get_info((struct inode_d *) &(cfs.root->inodes[0]));
 
-        }
-    }
+    char buffer_w[4096] = {"hello, world"};
+    cfs_write_block(fd, inode, 1, buffer_w, 4096);
 
     cfs_writeback(fd);
 
+    char buffer_r[4096] = {0};
+    cfs_read_block(fd, inode, 1, buffer_r, 4096);
+    printf("%s\n", buffer_r);
+
+    cfs_writeback(fd);
     return 0;
 }
 
@@ -274,6 +229,8 @@ int cfs_writeback(int fd) {
     try(write(fd, root->inodes, sizeof(struct inode_d) * 4096));
     try(write(fd, root->names, 128 * 4096));
 
+    try(fsync(fd));
+
     return 0;
 
 #undef root
@@ -321,155 +278,139 @@ int read_block(int fd, void *buffer, unsigned int size, unsigned int block) {
     __off_t now_pos = lseek(fd, 0, SEEK_CUR);
     lseek(fd, block * 4096, SEEK_SET);
     try(read(fd, buffer, 4096));
+    printf("read from %d (%d) \n", block * 4096, block);
     lseek(fd, now_pos, SEEK_SET);
-
-    printf("read block: %p\n", buffer);
-
-    int i;
-    for (i = 0; i < 1024; i++) printf("%x", ((unsigned int *) &(buffer)) [i]);
-
-    putchar('\n');
+    return 0;
 }
 
 int write_block(int fd, void *buffer, unsigned int size, unsigned int block) {
-    printf("write block: %p\n", buffer);
-    int i;
-    for (i = 0; i < 1024; i++) printf("%x", ((unsigned int *) &(buffer)) [i]);
-    putchar('\n');
-
     __off_t now_pos = lseek(fd, 0, SEEK_CUR);
     lseek(fd, block * 4096, SEEK_SET);
     try(write(fd, buffer, size));
+    printf("write to %d (%d) \n", block * 4096, block);
     lseek(fd, now_pos, SEEK_SET);
+    try(fsync(fd));
+    return 0;
 }
 
 
-/*
-    write buffer to file. 
-
-    STEPS: 
-        1. how many blocks we need? 
-        2. write to 1st block
-
-    WARNING: 
-        1. ABS(buffer.size / 4096) = buffer.size / 4096
-*/
-unsigned int cfs_write(int fd, struct inode_d *inode, char *buffer, unsigned int size) {
-    unsigned int block_need = ALIGNUP_4096(size) / 4096;
-    unsigned int block_wrote = 0;
+void get_info(struct inode_d *inode) {
+    printf("inode number: %d\n", inode->inode);
+    printf("permission: %d\n", inode->mode);
     
-    unsigned int blocks_1st[1024];
-    unsigned int blocks_2nd[1024];
-    unsigned int blocks_3rd[1024];
-
-#define c_1st block_wrote
-#define c_1st_c block_wrote
-    unsigned int c_2nd = 0;
-    unsigned int c_2nd_c = 0;
-
-    unsigned int c_3rd = 0;
-    unsigned int c_3rd_c = 0;
-
-    for (block_wrote = 0; block_wrote < block_need; block_wrote++) {
-        if (block_wrote < 1024) {
-            if (block_wrote == 0) {
-                inode->block_ptr_1 = alloc_block();
-                memset(blocks_1st, 0, 1024 * 4);
-            }
-
-            blocks_1st[c_1st_c] = alloc_block();
-
-            printf("write it: %p\n", blocks_1st);
-            int i;
-            for (i = 0; i < 1024; i++) printf("%x", blocks_1st[i]);
-            putchar('\n');
-
-
-            write_block(fd, (void *) &blocks_1st, 1024 * 4, inode->block_ptr_1);
-            printf("write to %d, %p\n", inode->block_ptr_1, blocks_1st);
-            write_block(fd, (char *) (buffer + block_wrote * 4096), 1024 * 4, blocks_1st[block_wrote]);
-            printf("write to %d\n", blocks_1st[block_wrote], (buffer + block_wrote * 4096));
-        }
-
-        else if (block_wrote >= 1024 < 1048576) {
-            if (block_wrote == 1024) {
-                inode->block_ptr_2 = alloc_block();
-                memset(blocks_2nd, 0, 1024 * 4);
-            }
-
-            if (c_2nd_c == 0) {
-                blocks_2nd[c_2nd] = alloc_block();
-                printf("new 2nd block: %d\n", blocks_2nd[c_2nd]);
-            }
-
-            blocks_1st[c_2nd_c] = alloc_block();
-            printf("new 1st block: %d\n", blocks_1st[c_2nd_c]);
-            c_2nd_c++;
-
-            if (c_2nd_c == 1024 - 1) {
-                c_2nd++;
-                c_2nd_c = 0;
-            }
-
-            write_block(fd, (char *) &blocks_2nd, 1024 * 4, inode->block_ptr_2);
-            write_block(fd, (char *) &blocks_1st, 1024 * 4, blocks_2nd[c_2nd]);
-            write_block(fd, (char *) (buffer + block_wrote * 4096), 1024 * 4, blocks_1st[block_wrote]);
-        }
+    if (inode->mode & IMD_AP_ROOT_RD) {
+        putchar('r');
+    }
+    else {
+        putchar('-');
     }
 
-    return size;
+    if (inode->mode & IMD_AP_ROOT_WR) {
+        putchar('w');
+    }
+    else {
+        putchar('-');
+    }
 
-#undef c_1st
-#undef c_1st_c
+    if (inode->mode & IMD_AP_ROOT_XR) {
+        putchar('x');
+    }
+    else {
+        putchar('-');
+    }
+
+    if (inode->mode & IMD_AP_USER_RD) {
+        putchar('r');
+    }
+    else {
+        putchar('-');
+    }
+
+    if (inode->mode & IMD_AP_USER_WR) {
+        putchar('w');
+    }
+    else {
+        putchar('-');
+    }
+
+    if (inode->mode & IMD_AP_USER_XR) {
+        putchar('x');
+    }
+    else {
+        putchar('-');
+    }
+
+    putchar('\n');
+
+    if (inode->mode & IMD_FT_REGFILE) {
+        printf("regular file\n");
+    }
+
+    if (inode->mode & IMD_FT_FOLDER) {
+        printf("folder\n");
+    }
+
+    if (inode->mode & IMD_FT_BLKDEV) {
+        printf("block device\n");
+    }
+    
+    if (inode->mode & IMD_FT_CHRDEV) {
+        printf("character device\n");
+    }
+
+    if (inode->mode & IMD_FT_POINTER) {
+        printf("pointer (%d)\n", inode->block_count);
+    }
+
+    return;
 }
 
-/*
-    read from inode. 
-    STEPS: 
-        1. how many blocks we need? 
-        2. read from 1st block
-
-    WARNING: 
-        1. ABS(buffer.size / 4096) = buffer.size / 4096
-*/
-unsigned int cfs_read(int fd, struct inode_d *inode, char *buffer, unsigned int max_size) {
-    unsigned int block_need = ALIGNUP_4096(max_size) / 4096;
-    unsigned int block_read;
-    
-    unsigned int blocks_1st[1024];
-    unsigned int blocks_2nd[1024];
-    unsigned int blocks_3rd[1024];
-
-#define c_1st block_read
-#define c_1st_c block_read
-    unsigned int c_2nd = 0;
-    unsigned int c_2nd_c = 0;
-
-    unsigned int c_3rd = 0;
-    unsigned int c_3rd_c = 0;
-
-    for (block_read = 0; block_read < block_need; block_read++) {
-        if (block_read < 1024) {
-            read_block(fd, (char *) &blocks_1st, 1024 * 4, inode->block_ptr_1);
-            printf("read from %d\n", inode->block_ptr_1);
-
-            read_block(fd, (char *) (buffer + block_read * 4096), 1024 * 4, blocks_1st[block_read]);
-            printf("read from %d\n", blocks_1st[block_read]);
+unsigned int cfs_write_block(int fd, struct inode_d *inode, unsigned int block_count, char *buffer, unsigned int size) {
+    if (block_count < 1024) {
+        unsigned int block_ptr_1[1024];
+        unsigned int bp1_index;
+        if (block_count == 1) {
+            inode->block_ptr_1 = alloc_block();
+            bp1_index = 0;
         }
 
-        else if (block_read >= 1024 < 1048576) {
-            c_2nd_c++;
-
-            if (c_2nd_c == 1024 - 1) {
-                c_2nd++;
-                c_2nd_c = 0;
-            }
-            read_block(fd, (char *) &blocks_2nd, 1024 * 4, inode->block_ptr_2);
-            read_block(fd, (char *) &blocks_1st, 1024 * 4, blocks_2nd[c_2nd_c]);
-
-            read_block(fd, (char *) (buffer + block_read * 4096), 1024 * 4, blocks_1st[block_read]);
+        else {
+            bp1_index = block_count - 1;
         }
+
+        read_block(fd, block_ptr_1, 4096, inode->block_ptr_1);
+        block_ptr_1[bp1_index] = alloc_block();
+        write_block(fd, block_ptr_1, 4096, inode->block_ptr_1);
+        printf("write to block %d: \n", inode->block_ptr_1);
+        read_block(fd, block_ptr_1, 4096, inode->block_ptr_1);
+        int i;
+        for (i = 0; i < 1024; i++) {
+            printf("%04x", block_ptr_1[i]);
+        }
+        putchar('\n');
+
+        write_block(fd, buffer, size, block_ptr_1[bp1_index]);
+        return size;
     }
+}
 
-    return max_size;
+unsigned int cfs_read_block(int fd, struct inode_d *inode, unsigned int block_count, char *buffer, unsigned int size) {
+    if (block_count < 1024) {
+        unsigned int block_ptr_1[1024];
+        unsigned int bp1_index;
+
+        bp1_index = block_count - 1;
+        read_block(fd, block_ptr_1, 4096, inode->block_ptr_1);
+
+        printf("read from block %d: \n", inode->block_ptr_1);
+        read_block(fd, block_ptr_1, 4096, inode->block_ptr_1);
+        int i;
+        for (i = 0; i < 1024; i++) {
+            printf("%04x", block_ptr_1[i]);
+        }
+        putchar('\n');
+
+        read_block(fd, buffer, size, block_ptr_1[bp1_index]);
+        return size;
+    }
 }

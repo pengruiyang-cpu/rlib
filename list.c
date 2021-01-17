@@ -40,3 +40,34 @@ struct list_node *list_rm_first(struct list_node *head) {
     head->next = head->next->next;
     return head;
 }
+
+struct list_node *list_read(struct list_node *head, unsigned int pos) {
+    struct list_node *tmp;
+    int i;
+
+    for (i = 0, tmp = head; i <= pos && tmp != NULL; i++, tmp = tmp->next);
+    return tmp;
+}
+
+struct list_node *list_read_last(struct list_node *head) {
+    return get_end(head);
+}
+
+unsigned int list_length(struct list_node *head) {
+    struct list_node *tmp = NULL;
+    int i;
+
+    for (i = 0, tmp = head; tmp->next != NULL && tmp->next->used == 1; tmp = tmp->next, i++);
+    return i;
+}
+
+
+struct list_node *list_rm_last(struct list_node *head) {
+    int i;
+    int len = list_length(head);
+    struct list_node *tmp;
+
+    for (i = 0, tmp = head; i < len - 1; i++, tmp = tmp->next);
+    tmp->next = NULL;
+    return tmp;
+}

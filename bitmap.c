@@ -1,4 +1,4 @@
-#include<stdlib.h>
+#include <stdlib.h>
 
 unsigned char *bitmap_init(unsigned int size) {
 	unsigned char *bitmap = malloc(size);
