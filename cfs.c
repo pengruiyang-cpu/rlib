@@ -22,6 +22,7 @@ int main(int argc, const char **argv) {
     int fd = open(argv[1], O_RDWR);
     try(fd);
 
+
     if (strcmp(argv[2], "format") == 0) {
         cfs_format(fd);
         close(fd);
@@ -42,9 +43,6 @@ int main(int argc, const char **argv) {
     );
 
     cfs_ls(cfs.root);
-    get_info(inode);
-
-    get_info((struct inode_d *) &(cfs.root->inodes[0]));
 
     char buffer_w[4096] = {"hello, world"};
     cfs_write_block(fd, inode, 1, buffer_w, 4096);
@@ -101,6 +99,13 @@ int cfs_format(int fd) {
 
     memset(cfs.block_bitmap, 0, ALIGNUP_4096(block_count / 8));
 
+    #define BLOCK_USED 1 /* superblock */ + ALIGNUP_4096(block_count / 8) / 4096 + sizeof(struct dir_d) / 4096
+
+    int i;
+    for (i = 1; i < BLOCK_USED; i++) {
+        bitmap_set(cfs.block_bitmap, i - 1, 1);
+    }
+
     cfs.root = malloc(sizeof(struct dir_d));
     if (cfs.root == NULL) {
         free(cfs.block_bitmap);
@@ -145,15 +150,23 @@ int cfs_format(int fd) {
     );
 
     root->inodes[1].block_count = ROOT_START_BLOCK;
+
+    char zero[1024] = {0};
+    
+    struct inode_d *inode = cfs_create(root, zero, 
+                                IMD_AP_ROOT_RD | 
+                                IMD_AP_ROOT_WR | 
+                                IMD_AP_ROOT_XR | 
+                                IMD_AP_USER_RD | 
+                                IMD_AP_USER_WR | 
+                                IMD_AP_USER_XR | 
+                                IMD_FT_CHRDEV
+    );
+    cfs_write_block(fd, inode, 1, zero, 4096);
     
     superblock_m.block_bitmap = cfs.block_bitmap;
     superblock_m.root_dir = root;
-#define BLOCK_USED 1 /* superblock */ + ALIGNUP_4096(block_count / 8) / 4096 + sizeof(struct dir_d) / 4096
 
-    int i;
-    for (i = 1; i < BLOCK_USED; i++) {
-        bitmap_set(cfs.block_bitmap, i - 1, 1);
-    }
 
     try(write(fd, &superblock_d, sizeof(struct super_block_d)));
     try(write(fd, cfs.block_bitmap, ALIGNUP_4096(block_count / 8)));
@@ -293,78 +306,6 @@ int write_block(int fd, void *buffer, unsigned int size, unsigned int block) {
     return 0;
 }
 
-
-void get_info(struct inode_d *inode) {
-    printf("inode number: %d\n", inode->inode);
-    printf("permission: %d\n", inode->mode);
-    
-    if (inode->mode & IMD_AP_ROOT_RD) {
-        putchar('r');
-    }
-    else {
-        putchar('-');
-    }
-
-    if (inode->mode & IMD_AP_ROOT_WR) {
-        putchar('w');
-    }
-    else {
-        putchar('-');
-    }
-
-    if (inode->mode & IMD_AP_ROOT_XR) {
-        putchar('x');
-    }
-    else {
-        putchar('-');
-    }
-
-    if (inode->mode & IMD_AP_USER_RD) {
-        putchar('r');
-    }
-    else {
-        putchar('-');
-    }
-
-    if (inode->mode & IMD_AP_USER_WR) {
-        putchar('w');
-    }
-    else {
-        putchar('-');
-    }
-
-    if (inode->mode & IMD_AP_USER_XR) {
-        putchar('x');
-    }
-    else {
-        putchar('-');
-    }
-
-    putchar('\n');
-
-    if (inode->mode & IMD_FT_REGFILE) {
-        printf("regular file\n");
-    }
-
-    if (inode->mode & IMD_FT_FOLDER) {
-        printf("folder\n");
-    }
-
-    if (inode->mode & IMD_FT_BLKDEV) {
-        printf("block device\n");
-    }
-    
-    if (inode->mode & IMD_FT_CHRDEV) {
-        printf("character device\n");
-    }
-
-    if (inode->mode & IMD_FT_POINTER) {
-        printf("pointer (%d)\n", inode->block_count);
-    }
-
-    return;
-}
-
 unsigned int cfs_write_block(int fd, struct inode_d *inode, unsigned int block_count, char *buffer, unsigned int size) {
     if (block_count < 1024) {
         unsigned int block_ptr_1[1024];
@@ -381,13 +322,7 @@ unsigned int cfs_write_block(int fd, struct inode_d *inode, unsigned int block_c
         read_block(fd, block_ptr_1, 4096, inode->block_ptr_1);
         block_ptr_1[bp1_index] = alloc_block();
         write_block(fd, block_ptr_1, 4096, inode->block_ptr_1);
-        printf("write to block %d: \n", inode->block_ptr_1);
         read_block(fd, block_ptr_1, 4096, inode->block_ptr_1);
-        int i;
-        for (i = 0; i < 1024; i++) {
-            printf("%04x", block_ptr_1[i]);
-        }
-        putchar('\n');
 
         write_block(fd, buffer, size, block_ptr_1[bp1_index]);
         return size;
@@ -402,13 +337,7 @@ unsigned int cfs_read_block(int fd, struct inode_d *inode, unsigned int block_co
         bp1_index = block_count - 1;
         read_block(fd, block_ptr_1, 4096, inode->block_ptr_1);
 
-        printf("read from block %d: \n", inode->block_ptr_1);
         read_block(fd, block_ptr_1, 4096, inode->block_ptr_1);
-        int i;
-        for (i = 0; i < 1024; i++) {
-            printf("%04x", block_ptr_1[i]);
-        }
-        putchar('\n');
 
         read_block(fd, buffer, size, block_ptr_1[bp1_index]);
         return size;
