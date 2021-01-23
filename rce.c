@@ -1,5 +1,3 @@
-#include <stdio.h>
-
 unsigned int encodeb(unsigned int k, unsigned int s) {
 	return (s + k) ^ k ^ !k;
 }
@@ -16,10 +14,4 @@ unsigned int decode(unsigned int k, unsigned int r) {
 	return decodeb(encodeb(k, k), r);
 }
 
-
-int main(void) {
-	unsigned int r = encode(20090427, 12345);
-	printf("source: %ud\n", r);
-	printf("source: %ux\n", decode(20090427, r));
-}
 
