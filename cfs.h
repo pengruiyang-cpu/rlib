@@ -50,14 +50,13 @@ struct inode_d {
 
 /* NOTE! It's in data block too. */
 struct dir_d {
+    unsigned int inode_count;
     /* bitmap of inodes */
-    unsigned char inode_bitmap[4096 / 8];
+    unsigned char *inode_bitmap;
     /* inodes */
-    struct inode_d inodes[4096];
+    struct inode_d *inodes;
     /* names */
-    char names[4096 * 128];
-    /* reserved (use 257 blocks) */
-    char reserved[3584];
+    char *names;
 };
 
 struct super_block_d {
