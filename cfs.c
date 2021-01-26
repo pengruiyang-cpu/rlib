@@ -45,12 +45,12 @@ int main(int argc, const char **argv) {
     cfs_ls(cfs.root);
 
     char buffer_w[4096] = {"hello, world"};
-    cfs_write_block(fd, inode, 0, buffer_w, 4096);
+    cfs_write_block(fd, inode, 1, buffer_w, 4096);
 
     cfs_writeback(fd);
 
     char buffer_r[4096] = {0};
-    cfs_read_block(fd, inode, 1024, buffer_r, 4096);
+    cfs_read_block(fd, inode, 1, buffer_r, 4096);
     printf("%s\n", buffer_r);
 
     cfs_writeback(fd);
@@ -113,17 +113,13 @@ int cfs_format(int fd) {
     }
 
     memset(cfs.root, 0, sizeof(struct dir_d));
-    cfs.root->inode_count = 4096;
-    cfs.root->inode_bitmap = malloc(4096 / 8);
     memset(cfs.root->inode_bitmap, 0, 4096 / 8);
-    cfs.root->inodes = malloc(sizeof(struct inode_d) * 4096);
     memset(cfs.root->inodes, 0, sizeof(struct inode_d) * 4096);
-    cfs.root->names = malloc(128 * 4096);
     memset(cfs.root->names, 0, 128 * 4096);
 
     /* init the root dir */
 #define root cfs.root
-#define ROOT_START_BLOCK /* superblock */ 4096 / 4096 + /* block bitmap */ ALIGNUP_4096(block_count / 8) / 4096
+#define ROOT_START_BLOCK /* superblock */ 4096 / 4096 + /* block bitmamp */ ALIGNUP_4096(block_count / 8) / 4096
 
     char filename[128] = {"."};
 
@@ -155,10 +151,9 @@ int cfs_format(int fd) {
 
     root->inodes[1].block_count = ROOT_START_BLOCK;
 
-    char zero[1024] = {};
-    char zero_filename[128 - 1] = {"zero.raw.chr"};
+    char zero[1024] = {0};
     
-    struct inode_d *inode = cfs_create(root, zero_filename, 
+    struct inode_d *inode = cfs_create(root, zero, 
                                 IMD_AP_ROOT_RD | 
                                 IMD_AP_ROOT_WR | 
                                 IMD_AP_ROOT_XR | 
@@ -219,16 +214,10 @@ int cfs_init(int fd) {
     if (root == NULL) {
         return 1;
     }
-    
-    try(read(fd, &(root->inode_count), sizeof(unsigned int)));
 
-    root->inode_bitmap = malloc(4096 / 8);
-    root->inodes = malloc(sizeof(struct inode_d) * root->inode_count);
-    root->names = malloc(128 * root->inode_count);
-
-    try(read(fd, root->inode_bitmap, root->inode_count / 8));
-    try(read(fd, root->inodes, sizeof(struct inode_d) * root->inode_count));
-    try(read(fd, root->names, 128 * root->inode_count));
+    try(read(fd, root->inode_bitmap, 4096 / 8));
+    try(read(fd, root->inodes, sizeof(struct inode_d) * 4096));
+    try(read(fd, root->names, 128 * 4096));
 
     superblock_m.root_dir = root;
 
@@ -249,10 +238,11 @@ int cfs_writeback(int fd) {
 
 #define root cfs.root
 
-    try(write(fd, &(root->inode_count), sizeof(unsigned int)));
-    try(write(fd, root->inode_bitmap, root->inode_count / 8));
-    try(write(fd, root->inodes, sizeof(struct inode_d) * root->inode_count));
-    try(write(fd, root->names, 128 * root->inode_count));
+    try(write(fd, root->inode_bitmap, 4096 / 8));
+    try(write(fd, root->inodes, sizeof(struct inode_d) * 4096));
+    try(write(fd, root->names, 128 * 4096));
+
+    try(fsync(fd));
 
     return 0;
 
@@ -292,7 +282,7 @@ struct inode_d *cfs_create(struct dir_d *dir, char *filename, unsigned short mod
 
     dir->inodes[inode].mode = mode;
     dir->inodes[inode].inode = inode;
-    memcpy((char *) &(dir->names[inode * 128]), filename, 128 - 1);
+    memcpy(dir->names + inode * 4096, filename, 128 - 1);
 
     return &(dir->inodes[inode]);
 }
@@ -316,15 +306,18 @@ int write_block(int fd, void *buffer, unsigned int size, unsigned int block) {
     return 0;
 }
 
-unsigned int cfs_write_block(int fd, struct inode_d *inode, unsigned int block_pos, char *buffer, unsigned int size) {
-    if (block_pos < 1024) {
+unsigned int cfs_write_block(int fd, struct inode_d *inode, unsigned int block_count, char *buffer, unsigned int size) {
+    if (block_count < 1024) {
         unsigned int block_ptr_1[1024];
         unsigned int bp1_index;
-        if (block_pos == 1) {
+        if (block_count == 1) {
             inode->block_ptr_1 = alloc_block();
+            bp1_index = 0;
         }
 
-        bp1_index = block_pos - 1;
+        else {
+            bp1_index = block_count - 1;
+        }
 
         read_block(fd, block_ptr_1, 4096, inode->block_ptr_1);
         block_ptr_1[bp1_index] = alloc_block();
@@ -336,12 +329,12 @@ unsigned int cfs_write_block(int fd, struct inode_d *inode, unsigned int block_p
     }
 }
 
-unsigned int cfs_read_block(int fd, struct inode_d *inode, unsigned int block_pos, char *buffer, unsigned int size) {
-    if (block_pos < 1024) {
+unsigned int cfs_read_block(int fd, struct inode_d *inode, unsigned int block_count, char *buffer, unsigned int size) {
+    if (block_count < 1024) {
         unsigned int block_ptr_1[1024];
         unsigned int bp1_index;
 
-        bp1_index = block_pos - 1;
+        bp1_index = block_count - 1;
         read_block(fd, block_ptr_1, 4096, inode->block_ptr_1);
 
         read_block(fd, block_ptr_1, 4096, inode->block_ptr_1);
